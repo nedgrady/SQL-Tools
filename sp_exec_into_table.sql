@@ -1,5 +1,6 @@
-CREATE PROCEDURE sp_exec_into_table	@SprocName nvarchar(max),
+ALTER PROCEDURE sp_exec_into_table	@SprocName nvarchar(max),
 				@CommaParameters nvarchar(max) ='',
+				@Log bit = 0,
 				@ExecGuid uniqueidentifier = NULL OUTPUT		
 AS
 /*	This Stored procedure takes a SprocName and some parameters to execute it with, storing the results in a server temp table called ##SprocName
@@ -8,6 +9,8 @@ AS
 	Parameters:	@SprocName - The name of the stored procedure we want to capture the results of
 			
 			@CommaParameters - A comma separated list of parameters (can be named or ordered)
+
+			@Log - If set to 1 then the execution will be logged to ##SprocHistory table (Must have sp_exec_log to use this!)
 
 			@ExecGuid - OUTPUT parameter that can be used to distinguish between the different execution runs of sp_exec_into_table
 	
@@ -81,3 +84,10 @@ EXEC
 )
 
 
+IF @Log > 0
+BEGIN
+	EXEC sp_exec_log	@SprocName = @SprocName,
+			@CommaParameters = @CommaParameters,
+			@ExecGuid = @ExecGuid,
+			@DropTempTables = 0
+END
