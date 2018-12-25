@@ -1,8 +1,8 @@
-DROP DATABASE IF EXISTS C#Generator
+DROP DATABASE IF EXISTS C#Generator2
 GO
-CREATE DATABASE C#Generator
+CREATE DATABASE C#Generator2
 GO
-USE C#Generator
+USE C#Generator2
 GO
 DROP TABLE IF EXISTS dbo.TypeFilter
 GO
@@ -40,7 +40,7 @@ INSERT	dbo.Numbers
 (
 	Num
 )
-SELECT	TOP (100000) ROW_NUMBER() OVER (ORDER BY O.object_id)
+SELECT	TOP (100000) ROW_NUMBER() OVER (ORDER BY @@SPID)
 FROM	sys.all_objects O
 	CROSS JOIN sys.all_objects O2
 /****** Object:  StoredProcedure [dbo].[spC#ViewHelper]    Script Date: 03/09/2018 22:02:27 ******/
@@ -108,6 +108,7 @@ FROM	' + QUOTENAME(@DBName) + N'.sys.procedures PR
 	INNER JOIN ' + QUOTENAME(@DBName) + N'.sys.schemas S ON S.schema_id = PR.schema_id'
 
 EXEC sp_executesql @SQL
+
 GO
 DECLARE @Name sysname = DB_NAME()
 EXEC [dbo].[spC#ViewHelper] @DBName = @Name
@@ -129,7 +130,8 @@ RETURNS @Text TABLE
 AS
 BEGIN
 	DECLARE	@C# nvarchar(max) = N'',
-		@SqlParameters nvarchar(max),
+		@MethodParameters nvarchar(max) = N'',
+		@SqlParameters nvarchar(max) = N'',
 		@ParameterCount int = 0,
 		@Tab nvarchar(10) = Char(9),
 		@SpName nvarchar(200),
@@ -160,17 +162,32 @@ BEGIN
 	
 	SET @C# = @1 + N'public static async Task Execute_' + @SpSafeName + N'_' + @SchemaSafeName + N'Async ('
 	
-	
-	SELECT	@C# = @C# + STRING_AGG(CAST(C#T.TypeName + N' ' + C#N.SafeName AS nvarchar(max)), N', '),
-		@SqlParameters = STRING_AGG(CAST(ISNULL(C#P.Parameter, N'') AS nvarchar(max)), N',' + CHAR(13) + CHAR(10)),
-		@ParameterCount = MAX(P.parameter_id)
+	--TODO: rewrite with STUFF
+	SELECT	@MethodParameters = @MethodParameters + N',' + C#T.TypeName + N' ' + C#N.SafeName,
+		@SqlParameters = @SqlParameters + N',' + CHAR(13) + CHAR(10) + ISNULL(C#P.Parameter, N'') 
 	FROM	vwParameters P
 		CROSS APPLY tfnC#MaybeNullableType(P.object_id, P.parameter_id) C#T
 		CROSS APPLY tfnC#SafeName(P.PAName) C#N
-		CROSS APPLY dbo.tfnC#SqlParameter(P.object_id, P.parameter_id, @IndentationLevel + 5) C#P
+		CROSS APPLY dbo.tfnC#SqlParameter(P.object_id, P.parameter_id, 0) C#P
 	WHERE	P.object_id = @procedure_object_id
+
+	SELECT	@ParameterCount = MAX(parameter_id)
+	FROM	vwParameters
+	WHERE	object_id = @procedure_object_id
+
+	-- TODO: remove and combine with above select
+	SELECT	@MethodParameters = Str
+	FROM	dbo.tfnRemoveFirstCharacter(@MethodParameters)
 	
-	SET @C# = @C# + CASE WHEN @ParameterCount > 0 THEN ', ' ELSE N' ' END + N' Func<SqlDataReader, Task> callback)
+	SELECT	@SqlParameters = Str
+	FROM	dbo.tfnRemoveFirstCharacter(@SqlParameters)
+	SELECT	@SqlParameters = Str
+	FROM	dbo.tfnRemoveFirstCharacter(@SqlParameters)
+	SELECT	@SqlParameters = Str
+	FROM	dbo.tfnRemoveFirstCharacter(@SqlParameters)
+
+	
+	SET @C# = @C# + CASE WHEN @ParameterCount > 0 THEN @MethodParameters + ', ' ELSE N' ' END + N' Func<SqlDataReader, Task> callback)
 ' + @1 + N'{
 ' + @2 + N'using (SqlConnection ' + @ConnVar + N' = new SqlConnection(CONNECTION_' + @AppendText + N'))
 ' + @2 + N'{
@@ -199,6 +216,7 @@ BEGIN
 	SELECT	@C#
 	RETURN
 END
+
 GO
 /****** Object:  UserDefinedFunction [dbo].[tfnChars]    Script Date: 03/09/2018 22:02:27 ******/
 SET ANSI_NULLS ON
@@ -237,19 +255,19 @@ CREATE FUNCTION [dbo].[tfnReplaceNonAlpha]
 RETURNS TABLE
 AS
 RETURN
-SELECT	STRING_AGG
-	(
-		CASE
+SELECT
+(
+	SELECT	CASE
 			WHEN 
 			(
 				(LOWER(C.Char) NOT BETWEEN 'a' AND 'z') AND
 				(C.Char NOT BETWEEN '0' AND '9')
 			) THEN @Replace
 			ELSE C.Char
-		END, ''
-	) [Str]
-FROM	tfnChars(@Str, @Start, @Chars) C
-
+		END
+	FROM	tfnChars(@Str, @Start, @Chars) C
+	FOR	XML PATH ('')
+) AS [Str]
 GO
 /****** Object:  UserDefinedFunction [dbo].[tfnC#Prepend@]    Script Date: 03/09/2018 22:02:27 ******/
 SET ANSI_NULLS ON
@@ -377,7 +395,6 @@ SELECT	CASE
 		WHEN @system_type_id = 239 THEN 0
 		WHEN @system_type_id = 241 THEN	0
 	END [IsStruct]
-
 GO
 /****** Object:  UserDefinedFunction [dbo].[tfnC#MaybeNullableType]    Script Date: 03/09/2018 22:02:27 ******/
 SET ANSI_NULLS ON
@@ -413,8 +430,7 @@ CREATE FUNCTION [dbo].[tfnRemoveFirstCharacter]
 RETURNS TABLE
 AS
 RETURN
-SELECT	RIGHT(@str, LEN(@Str)-1) [Str]
-
+SELECT	RIGHT(@str, ABS(LEN(@Str)-1)) [Str]
 GO
 /****** Object:  UserDefinedFunction [dbo].[tfnC#ParameterName]    Script Date: 03/09/2018 22:02:27 ******/
 SET ANSI_NULLS ON
@@ -489,7 +505,7 @@ CREATE   FUNCTION [dbo].[tfnC#SqlParameter]
 (
 	@procedure_object_id int,
 	@paramter_id int,
-	@IndentationLevel int
+	@IndentationLevel int = 0
 )
 RETURNS TABLE
 AS
@@ -497,7 +513,7 @@ RETURN
 SELECT	
 REPLICATE(char(9),@IndentationLevel) + N'new SqlParameter()
 '
-+ REPLICATE(char(9),@IndentationLevel) + N'{
++ ISNULL(REPLICATE(char(9),@IndentationLevel) + N'{
 '+ REPLICATE(char(9),@IndentationLevel+1) + N'ParameterName = "' + P.PAName + N'",
 '+ REPLICATE(char(9),@IndentationLevel+1) + N'SqlDbType = SqlDbType.' + C#T.SqlDbType + N',
 '+ REPLICATE(char(9),@IndentationLevel+1) + N'SqlValue = ' + C#N.SafeName + N',
@@ -505,7 +521,7 @@ REPLICATE(char(9),@IndentationLevel) + N'new SqlParameter()
 '+ REPLICATE(char(9),@IndentationLevel+1) + N'Precision = ' + CONVERT(nvarchar(5),P.precision) + N',
 '+ REPLICATE(char(9),@IndentationLevel+1) + N'Scale = ' + CONVERT(nvarchar(5), P.Scale) + N',
 '+ REPLICATE(char(9),@IndentationLevel+1) + N'IsNullable = ' + CASE WHEN P.is_nullable = 1 THEN N'true' ELSE N'false' END + N'
-' + REPLICATE(char(9),@IndentationLevel) + N'}' Parameter
+', N'') + REPLICATE(char(9),@IndentationLevel) + N'}' Parameter
 FROM	vwParameters P
 	CROSS APPLY tfnC#SqlDbType(P.system_type_id) C#T
 	CROSS APPLY tfnC#SafeName(P.PAName) C#N
@@ -524,9 +540,6 @@ CREATE   PROCEDURE [dbo].[spC#GenerateAllMethods]
 	@ClassName nvarchar(max) = null,
 	@AppendText nvarchar(32) = null
 AS
-
-SET CONCAT_NULL_YIELDS_NULL OFF
-
 IF NOT EXISTS
 (
 	SELECT	*
@@ -540,17 +553,24 @@ END
 BEGIN TRY
 	EXEC spC#ViewHelper @DBName
 
-	DECLARE	@C# nvarchar(max) = N''
-	
-	IF @Namespace IS NOT NULL
-	BEGIN
+	SET @AppendText = ISNULL(@AppendText, N'')
 
-		SET @C# = 
+	
+	SELECT	@DBName = Str
+	FROM	dbo.tfnReplaceNonAlpha(@DBName, 1, ISNULL(LEN(@DBName), 0), N'_')
+
+	DECLARE	@C# nvarchar(max) = 
 N'using System;
 using System.Data;
 using System.Data.SqlClient;
 using System.Threading.Tasks;
-using System.Data.SqlTypes;
+using System.Data.SqlTypes;'
+	
+	IF @Namespace IS NOT NULL
+	BEGIN
+
+		SET @C# = @C# +
+N'
 namespace ' + @Namespace + N'
 {
 '
@@ -572,8 +592,8 @@ namespace ' + @Namespace + N'
 	FROM	vwProcedures P
 		CROSS APPLY tfnC#MethodText(P.object_id, 2, @AppendText) T
 	
-	SELECT	@C# = @C# + N'	}
-}'
+	SELECT	@C# = @C# + CASE WHEN @Namespace IS NULL THEN N'}' ELSE N'	}
+}' END
 
 	SELECT @C#
 
@@ -585,4 +605,59 @@ BEGIN CATCH
 	DROP VIEW vwParameters
 	;THROW
 END CATCH
+
 GO
+/****** Object:  StoredProcedure [dbo].[spCursorProcess]    Script Date: 10/09/2018 20:09:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+/****** Object:  StoredProcedure [dbo].[spCursorProcess]    Script Date: 10/09/2018 20:13:22 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[spCursorProcess] 
+	@Stmt nvarchar(max),
+	@spName nvarchar(200)
+AS
+
+DECLARE	@Decls nvarchar(max) = N'',
+		@Vars nvarchar(max) = N'',
+		@Sql nvarchar(max)
+
+
+SELECT	@Decls = @Decls + N' @' + N',' + CONVERT(nvarchar(3), column_ordinal) + N' ' + S.system_type_name ,
+		@Vars = @Vars + N',' + N'@' + CONVERT(nvarchar(3), column_ordinal) 
+FROM	sys.dm_exec_describe_first_result_set(@Stmt, NULL, NULL) S
+SELECT	@Decls = N'DECLARE ' + @Decls
+
+SELECT	@Decls = [Str]
+FROM	tfnRemoveFirstCharacter(@Decls)
+
+SELECT	@Vars = [Str] 
+FROM	tfnRemoveFirstCharacter (@Vars)
+
+SELECT @Sql = 
+@Decls +
+N'
+DECLARE Curs CURSOR LOCAL FAST_FORWARD FOR
+' +
+@Stmt +
+N'
+OPEN Curs
+WHILE 1=1
+BEGIN
+	FETCH Curs INTO
+	' + @Vars +
+N'
+	IF @@FETCH_STATUS <> 0
+	   BREAK
+
+	EXEC ' + @spName + N' ' + @Vars +
+N'
+END
+DEALLOCATE Curs
+'
+
+EXEC sp_executesql @Sql
